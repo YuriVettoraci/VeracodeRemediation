@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VeracodeRemediation.Core\VeracodeRemediation.Core.csproj" />
+    <ProjectReference Include="..\VeracodeRemediation.Application\VeracodeRemediation.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
