@@ -5,9 +5,11 @@ namespace VeracodeRemediation.Infrastructure.Veracode;
 
 /// <summary>
 /// Handles HMAC authentication for Veracode API requests
+/// Following the official Veracode HMAC signing algorithm
 /// </summary>
 public class HmacAuthHandler
 {
+    private const string VeracodeRequestVersionString = "vcode_request_version_1";
     private readonly string _apiId;
     private readonly string _apiKey;
 
@@ -20,38 +22,65 @@ public class HmacAuthHandler
     public string GenerateAuthorizationHeader(string httpMethod, string url, string host, string path)
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
-        var nonce = Guid.NewGuid().ToString("N");
+        var nonce = GenerateNonce();
 
-        // Veracode HMAC: First sign the API key with timestamp to get signing key
-        // Then sign the data string with the signing key (hex-encoded)
-        var signingKeyHex = ComputeHmacHex(_apiKey, timestamp);
-        var signingKeyBytes = Convert.FromHexString(signingKeyHex);
-        
+        // Build data string as per Veracode specification
         var dataString = $"id={_apiId}&host={host}&url={path}&method={httpMethod}";
-        var signature = ComputeHmacHex(signingKeyBytes, dataString);
+        
+        // Generate signature using Veracode's chained HMAC process
+        var signature = GetSignature(_apiKey, dataString, timestamp, nonce);
 
         // Create the authorization header
         var authHeader = $"VERACODE-HMAC-SHA-256 id={_apiId},ts={timestamp},nonce={nonce},sig={signature}";
         return authHeader;
     }
 
-    private static string ComputeHmacHex(string key, string data)
+    /// <summary>
+    /// Generate signature following Veracode's chained HMAC algorithm:
+    /// 1. HMAC(nonce, key) -> encryptedNonce
+    /// 2. HMAC(timestamp, encryptedNonce) -> encryptedTimestamp
+    /// 3. HMAC("vcode_request_version_1", encryptedTimestamp) -> signingKey
+    /// 4. HMAC(data, signingKey) -> signature
+    /// </summary>
+    private static string GetSignature(string key, string data, string timestamp, string nonce)
     {
-        var keyBytes = Encoding.UTF8.GetBytes(key);
-        var dataBytes = Encoding.UTF8.GetBytes(data);
+        // Convert hex string key to bytes
+        var keyBytes = Convert.FromHexString(key);
+        var nonceBytes = Convert.FromHexString(nonce);
 
-        using var hmac = new HMACSHA256(keyBytes);
-        var hashBytes = hmac.ComputeHash(dataBytes);
-        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+        // Step 1: HMAC(nonce, key)
+        var encryptedNonce = HmacSha256(nonceBytes, keyBytes);
+
+        // Step 2: HMAC(timestamp, encryptedNonce)
+        var encryptedTimestamp = HmacSha256(timestamp, encryptedNonce);
+
+        // Step 3: HMAC("vcode_request_version_1", encryptedTimestamp)
+        var signingKey = HmacSha256(VeracodeRequestVersionString, encryptedTimestamp);
+
+        // Step 4: HMAC(data, signingKey)
+        var signature = HmacSha256(data, signingKey);
+
+        return Convert.ToHexString(signature).ToLowerInvariant();
     }
 
-    private static string ComputeHmacHex(byte[] keyBytes, string data)
+    private static byte[] HmacSha256(string data, byte[] key)
     {
-        var dataBytes = Encoding.UTF8.GetBytes(data);
+        using var hmac = new HMACSHA256(key);
+        return hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+    }
 
-        using var hmac = new HMACSHA256(keyBytes);
-        var hashBytes = hmac.ComputeHash(dataBytes);
-        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    private static byte[] HmacSha256(byte[] data, byte[] key)
+    {
+        using var hmac = new HMACSHA256(key);
+        return hmac.ComputeHash(data);
+    }
+
+    private static string GenerateNonce()
+    {
+        var bytes = new byte[16];
+        using var rng = RandomNumberGenerator.Create();
+        rng.GetBytes(bytes);
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 }
 
