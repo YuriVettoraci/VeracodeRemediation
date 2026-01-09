@@ -11,8 +11,5 @@
     <ProjectReference Include="..\VeracodeRemediation.Application\VeracodeRemediation.Application.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography" Version="8.0.0" />
-  </ItemGroup>
 
 </Project>

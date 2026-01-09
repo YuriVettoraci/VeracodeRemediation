@@ -13,19 +13,22 @@ public class RemediationService
     private readonly IFixEngine _fixEngine;
     private readonly IPatchGenerator _patchGenerator;
     private readonly IReportGenerator _reportGenerator;
+    private readonly IConfirmationService? _confirmationService;
 
     public RemediationService(
         IVeracodeApiClient apiClient,
         IVulnerabilityClassifier classifier,
         IFixEngine fixEngine,
         IPatchGenerator patchGenerator,
-        IReportGenerator reportGenerator)
+        IReportGenerator reportGenerator,
+        IConfirmationService? confirmationService = null)
     {
         _apiClient = apiClient;
         _classifier = classifier;
         _fixEngine = fixEngine;
         _patchGenerator = patchGenerator;
         _reportGenerator = reportGenerator;
+        _confirmationService = confirmationService;
     }
 
     public async Task<RemediationReport> RemediateAsync(
@@ -80,6 +83,30 @@ public class RemediationService
                 continue;
             }
 
+            // Request confirmation before applying fix
+            if (_confirmationService != null)
+            {
+                var fixDescription = $"Auto-fix for {vulnerability.CweId} vulnerability";
+                var confirmed = await _confirmationService.ConfirmApplyFixAsync(
+                    vulnerability.Id,
+                    vulnerability.CweId,
+                    vulnerability.FilePath ?? "N/A",
+                    fixDescription);
+
+                if (!confirmed)
+                {
+                    report.RequiresManualReview.Add(new VulnerabilitySummary
+                    {
+                        Id = vulnerability.Id,
+                        CweId = vulnerability.CweId,
+                        Severity = vulnerability.Severity,
+                        FilePath = vulnerability.FilePath,
+                        Reason = "User declined to apply fix"
+                    });
+                    continue;
+                }
+            }
+
             // Apply fix
             var fixResult = await _fixEngine.ApplyFixAsync(vulnerability, cancellationToken);
             fixResults.Add(fixResult);
@@ -112,16 +139,55 @@ public class RemediationService
         if (fixResults.Any(f => f.Success))
         {
             var patchPath = patchOutputPath ?? "veracode-remediation.patch";
-            var generatedPatchPath = await _patchGenerator.GeneratePatchFileAsync(
-                fixResults,
-                patchPath,
-                cancellationToken);
-            report.PatchFilePath = generatedPatchPath;
+            var successfulFixes = fixResults.Count(f => f.Success);
+            
+            // Request confirmation before generating patch
+            if (_confirmationService != null)
+            {
+                var confirmed = await _confirmationService.ConfirmGeneratePatchAsync(successfulFixes, patchPath);
+                if (!confirmed)
+                {
+                    Console.WriteLine("⚠️  Patch file generation cancelled by user.");
+                }
+                else
+                {
+                    var generatedPatchPath = await _patchGenerator.GeneratePatchFileAsync(
+                        fixResults,
+                        patchPath,
+                        cancellationToken);
+                    report.PatchFilePath = generatedPatchPath;
+                }
+            }
+            else
+            {
+                var generatedPatchPath = await _patchGenerator.GeneratePatchFileAsync(
+                    fixResults,
+                    patchPath,
+                    cancellationToken);
+                report.PatchFilePath = generatedPatchPath;
+            }
         }
 
         // Generate report
         var reportPath = reportOutputPath ?? "veracode-remediation-report.md";
-        await _reportGenerator.GenerateReportAsync(report, reportPath, cancellationToken);
+        
+        // Request confirmation before generating report
+        if (_confirmationService != null)
+        {
+            var confirmed = await _confirmationService.ConfirmGenerateReportAsync(reportPath);
+            if (!confirmed)
+            {
+                Console.WriteLine("⚠️  Report file generation cancelled by user.");
+            }
+            else
+            {
+                await _reportGenerator.GenerateReportAsync(report, reportPath, cancellationToken);
+            }
+        }
+        else
+        {
+            await _reportGenerator.GenerateReportAsync(report, reportPath, cancellationToken);
+        }
 
         return report;
     }

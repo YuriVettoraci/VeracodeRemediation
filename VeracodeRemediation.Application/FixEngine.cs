@@ -9,16 +9,18 @@ namespace VeracodeRemediation.Application;
 /// </summary>
 public class FixEngine : IFixEngine
 {
-    private readonly Dictionary<string, Func<Vulnerability, Task<FixResult>>> _fixers;
+    private readonly Dictionary<string, Func<Vulnerability, IConfirmationService?, Task<FixResult>>> _fixers;
+    private readonly IConfirmationService? _confirmationService;
 
-    public FixEngine()
+    public FixEngine(IConfirmationService? confirmationService = null)
     {
-        _fixers = new Dictionary<string, Func<Vulnerability, Task<FixResult>>>
+        _confirmationService = confirmationService;
+        _fixers = new Dictionary<string, Func<Vulnerability, IConfirmationService?, Task<FixResult>>>
         {
-            { "CWE-89", async v => await new SqlInjectionFixer().FixAsync(v) },
-            { "CWE-798", async v => await new HardcodedSecretFixer().FixAsync(v) },
-            { "CWE-259", async v => await new HardcodedSecretFixer().FixAsync(v) },
-            { "CWE-327", async v => await new InsecureHashFixer().FixAsync(v) },
+            { "CWE-89", async (v, cs) => { var fixer = new SqlInjectionFixer { ConfirmationService = cs }; return await fixer.FixAsync(v); } },
+            { "CWE-798", async (v, cs) => { var fixer = new HardcodedSecretFixer { ConfirmationService = cs }; return await fixer.FixAsync(v); } },
+            { "CWE-259", async (v, cs) => { var fixer = new HardcodedSecretFixer { ConfirmationService = cs }; return await fixer.FixAsync(v); } },
+            { "CWE-327", async (v, cs) => { var fixer = new InsecureHashFixer { ConfirmationService = cs }; return await fixer.FixAsync(v); } },
         };
     }
 
@@ -37,14 +39,14 @@ public class FixEngine : IFixEngine
         // Handle SCA vulnerabilities
         if (vulnerability.IssueType == "SCA")
         {
-            var dependencyFixer = new DependencyFixer();
+            var dependencyFixer = new DependencyFixer { ConfirmationService = _confirmationService };
             return await dependencyFixer.FixAsync(vulnerability);
         }
 
         // Handle SAST vulnerabilities
         if (_fixers.TryGetValue(vulnerability.CweId, out var fixer))
         {
-            return await fixer(vulnerability);
+            return await fixer(vulnerability, _confirmationService);
         }
 
         return new FixResult

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using VeracodeRemediation.Application;
 using VeracodeRemediation.Application.Classifiers;
 using VeracodeRemediation.Application.Generators;
+using VeracodeRemediation.Application.Services;
 using VeracodeRemediation.Core.Interfaces;
 using VeracodeRemediation.Infrastructure.Veracode;
 
@@ -21,8 +22,8 @@ class Program
         {
             // Parse command line arguments
             var config = host.Services.GetRequiredService<IConfiguration>();
-            var apiId = config["Veracode:ApiId"] ?? Environment.GetEnvironmentVariable("VERACODE_API_ID");
-            var apiKey = config["Veracode:ApiKey"] ?? Environment.GetEnvironmentVariable("VERACODE_API_KEY");
+            var apiId = config["Veracode:ApiId"] ?? Environment.GetEnvironmentVariable("Veracode__ApiId") ?? Environment.GetEnvironmentVariable("VERACODE_API_ID");
+            var apiKey = config["Veracode:ApiKey"] ?? Environment.GetEnvironmentVariable("Veracode__ApiKey") ?? Environment.GetEnvironmentVariable("VERACODE_API_KEY");
             var appName = args.Length > 0 ? args[0] : config["Veracode:ApplicationName"];
             var appGuid = args.Length > 1 ? args[1] : null;
             var patchPath = args.Length > 2 ? args[2] : "veracode-remediation.patch";
@@ -30,7 +31,7 @@ class Program
 
             if (string.IsNullOrWhiteSpace(apiId) || string.IsNullOrWhiteSpace(apiKey))
             {
-                logger.LogError("Veracode API credentials not found. Set VERACODE_API_ID and VERACODE_API_KEY environment variables or configure in appsettings.json");
+                logger.LogError("Veracode API credentials not found. Set Veracode__ApiId and Veracode__ApiKey environment variables (or VERACODE_API_ID and VERACODE_API_KEY) or configure in appsettings.json");
                 return;
             }
 
@@ -41,8 +42,18 @@ class Program
                 return;
             }
 
+            var confirmationService = host.Services.GetRequiredService<IConfirmationService>();
             var apiClient = new VeracodeApiClient(apiId, apiKey);
             var remediationService = host.Services.GetRequiredService<RemediationService>();
+
+            // Request confirmation before connecting to API
+            var finalAppName = appName ?? "Unknown Application";
+            var confirmed = await confirmationService.ConfirmApiConnectionAsync(apiId, finalAppName);
+            if (!confirmed)
+            {
+                logger.LogWarning("API connection cancelled by user.");
+                return;
+            }
 
             // Resolve application GUID if name provided
             if (!string.IsNullOrWhiteSpace(appName) && string.IsNullOrWhiteSpace(appGuid))
@@ -55,6 +66,16 @@ class Program
                     return;
                 }
                 logger.LogInformation($"Found application GUID: {appGuid}");
+            }
+
+            // Request confirmation before fetching vulnerabilities
+            confirmed = await confirmationService.ConfirmFetchVulnerabilitiesAsync(
+                finalAppName,
+                appGuid ?? "N/A");
+            if (!confirmed)
+            {
+                logger.LogWarning("Vulnerability fetch cancelled by user.");
+                return;
             }
 
             logger.LogInformation("Starting vulnerability remediation...");
@@ -83,22 +104,30 @@ class Program
         Host.CreateDefaultBuilder(args)
             .ConfigureAppConfiguration((context, config) =>
             {
-                config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+                // Host.CreateDefaultBuilder already adds appsettings.json, but we ensure it's loaded
+                // and add environment variables support
                 config.AddEnvironmentVariables();
             })
             .ConfigureServices((context, services) =>
             {
                 var configuration = context.Configuration;
-                var apiId = configuration["Veracode:ApiId"] ?? Environment.GetEnvironmentVariable("VERACODE_API_ID") ?? "";
-                var apiKey = configuration["Veracode:ApiKey"] ?? Environment.GetEnvironmentVariable("VERACODE_API_KEY") ?? "";
+                var apiId = configuration["Veracode:ApiId"] ?? Environment.GetEnvironmentVariable("Veracode__ApiId") ?? Environment.GetEnvironmentVariable("VERACODE_API_ID") ?? "";
+                var apiKey = configuration["Veracode:ApiKey"] ?? Environment.GetEnvironmentVariable("Veracode__ApiKey") ?? Environment.GetEnvironmentVariable("VERACODE_API_KEY") ?? "";
 
                 services.AddHttpClient();
                 services.AddSingleton<IVeracodeApiClient>(sp => new VeracodeApiClient(apiId, apiKey));
                 services.AddSingleton<IVulnerabilityClassifier, VulnerabilityClassifier>();
-                services.AddSingleton<IFixEngine, FixEngine>();
+                services.AddSingleton<IConfirmationService, ConfirmationService>();
+                services.AddSingleton<IFixEngine>(sp => new FixEngine(sp.GetService<IConfirmationService>()));
                 services.AddSingleton<IPatchGenerator, PatchGenerator>();
                 services.AddSingleton<IReportGenerator, ReportGenerator>();
-                services.AddSingleton<RemediationService>();
+                services.AddSingleton<RemediationService>(sp => new RemediationService(
+                    sp.GetRequiredService<IVeracodeApiClient>(),
+                    sp.GetRequiredService<IVulnerabilityClassifier>(),
+                    sp.GetRequiredService<IFixEngine>(),
+                    sp.GetRequiredService<IPatchGenerator>(),
+                    sp.GetRequiredService<IReportGenerator>(),
+                    sp.GetService<IConfirmationService>()));
             })
             .ConfigureLogging(logging =>
             {

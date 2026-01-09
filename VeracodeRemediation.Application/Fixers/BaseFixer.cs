@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using VeracodeRemediation.Core.Interfaces;
 using VeracodeRemediation.Core.Models;
 
 namespace VeracodeRemediation.Application.Fixers;
@@ -9,8 +10,20 @@ namespace VeracodeRemediation.Application.Fixers;
 /// </summary>
 public abstract class BaseFixer
 {
-    protected static async Task<string> ReadFileAsync(string filePath)
+    public IConfirmationService? ConfirmationService { get; set; }
+
+    protected async Task<string> ReadFileAsync(string filePath)
     {
+        // Request confirmation before reading file
+        if (ConfirmationService != null)
+        {
+            var confirmed = await ConfirmationService.ConfirmReadFileAsync(filePath);
+            if (!confirmed)
+            {
+                throw new UnauthorizedAccessException($"User declined to read file: {filePath}");
+            }
+        }
+
         if (!File.Exists(filePath))
             throw new FileNotFoundException($"File not found: {filePath}");
 
@@ -46,7 +59,7 @@ public abstract class BaseFixer
         return patch.ToString();
     }
 
-    private static List<string> ComputeDiff(string[] original, string[] fixed)
+    private static List<string> ComputeDiff(string[] original, string[] fixedContent)
     {
         // Simplified diff algorithm - in production, use a proper diff library
         var hunks = new List<string>();
@@ -54,9 +67,9 @@ public abstract class BaseFixer
         var j = 0;
         var contextStart = -1;
 
-        while (i < original.Length || j < fixed.Length)
+        while (i < original.Length || j < fixedContent.Length)
         {
-            if (i < original.Length && j < fixed.Length && original[i] == fixed[j])
+            if (i < original.Length && j < fixedContent.Length && original[i] == fixedContent[j])
             {
                 i++;
                 j++;
@@ -66,7 +79,7 @@ public abstract class BaseFixer
                 if (contextStart == -1)
                 {
                     contextStart = Math.Max(0, i - 3);
-                    hunks.Add($"@@ -{contextStart + 1},{original.Length - contextStart} +{contextStart + 1},{fixed.Length - contextStart} @@");
+                    hunks.Add($"@@ -{contextStart + 1},{original.Length - contextStart} +{contextStart + 1},{fixedContent.Length - contextStart} @@");
                 }
 
                 if (i < original.Length)
@@ -75,9 +88,9 @@ public abstract class BaseFixer
                     i++;
                 }
 
-                if (j < fixed.Length)
+                if (j < fixedContent.Length)
                 {
-                    hunks.Add($"+{fixed[j]}");
+                    hunks.Add($"+{fixedContent[j]}");
                     j++;
                 }
             }
